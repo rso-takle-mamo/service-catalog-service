@@ -12,6 +12,7 @@ using ServiceCatalogService.Api.Services;
 using ServiceCatalogService.Api.Services.Interfaces;
 using ServiceCatalogService.Api.Filters;
 using ServiceCatalogService.Api.Configuration;
+using ServiceCatalogService.Api.HealthChecks;
 using ServiceCatalogService.Database;
 using Microsoft.AspNetCore.Mvc;
 using Prometheus;
@@ -78,6 +79,9 @@ if (builder.Environment.IsDevelopment())
 
 builder.Configuration.AddEnvironmentVariables();
 
+// Configure Kafka settings
+builder.Services.Configure<KafkaSettings>(builder.Configuration.GetSection("Kafka"));
+
 // Configure JWT settings
 builder.Services.Configure<JwtSettings>(builder.Configuration.GetSection(JwtSettings.SectionName));
 
@@ -102,6 +106,22 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 
 builder.Services.AddAuthorization();
 
+// Configure CORS settings
+builder.Services.Configure<CorsSettings>(builder.Configuration.GetSection(CorsSettings.SectionName));
+
+// Configure CORS
+var corsSettings = builder.Configuration.GetSection(CorsSettings.SectionName).Get<CorsSettings>() ?? new CorsSettings();
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowFrontend", policy =>
+    {
+        policy.WithOrigins(corsSettings.AllowedOrigins)
+              .AllowAnyMethod()
+              .AllowAnyHeader()
+              .AllowCredentials();
+    });
+});
+
 builder.Services.AddHttpContextAccessor();
 
 // Database configuration
@@ -125,10 +145,12 @@ builder.Services.AddHealthChecks()
         healthQuery: "SELECT 1;",
         name: "postgresql",
         failureStatus: HealthStatus.Unhealthy,
-        tags: ["db", "postgresql"]);
+        tags: ["db", "postgresql"])
+    .AddCheck<KafkaHealthCheck>("kafka", tags: ["kafka", "messaging"]);
 
 // Register middleware
 builder.Services.AddTransient<GlobalExceptionHandler>();
+builder.Services.AddTransient<RequestResponseLoggingMiddleware>();
 
 // Register filters
 builder.Services.AddScoped<ModelValidationFilter>();
@@ -139,6 +161,15 @@ builder.Services.AddScoped<IUserContextService, UserContextService>();
 // Register business services
 builder.Services.AddScoped<IServiceService, ServiceService>();
 builder.Services.AddScoped<ICategoryService, CategoryService>();
+
+// Register tenant event service
+builder.Services.AddScoped<ITenantEventService, TenantEventService>();
+
+// Register Kafka producer service
+builder.Services.AddSingleton<IKafkaProducerService, KafkaProducerService>();
+
+// Register Kafka consumer as background service
+builder.Services.AddHostedService<KafkaConsumerService>();
 
 
 var app = builder.Build();
@@ -153,16 +184,19 @@ if (app.Environment.IsDevelopment())
         c.SwaggerEndpoint("/swagger/v1/swagger.json", "ServiceCatalog API v1");
         c.RoutePrefix = "swagger";
         // Hide the black topbar
-        c.HeadContent = 
+        c.HeadContent =
         """
             <style>
-                .swagger-ui .topbar { 
-                    display: none; 
+                .swagger-ui .topbar {
+                    display: none;
                 }
             </style>
          """;
     });
 }
+
+// Add request/response logging middleware
+app.UseMiddleware<RequestResponseLoggingMiddleware>();
 
 // Add global exception handling middleware
 app.UseMiddleware<GlobalExceptionHandler>();
@@ -171,6 +205,8 @@ app.UseHttpsRedirection();
 
 app.UseAuthentication();
 app.UseAuthorization();
+
+app.UseCors("AllowFrontend");
 
 // Add /metrics endpoints for Prometheus
 app.UseHttpMetrics(); 
@@ -194,7 +230,9 @@ app.MapHealthChecks("/health/live", new HealthCheckOptions
 
 app.MapHealthChecks("/health/ready", new HealthCheckOptions
 {
-    Predicate = (check) => check.Tags.Contains("self") || check.Tags.Contains("db"),
+    Predicate = check =>
+        check.Tags.Contains("db") ||
+        check.Tags.Contains("kafka"),
     ResponseWriter = UIResponseWriter.WriteHealthCheckUIResponse,
     AllowCachingResponses = false
 });

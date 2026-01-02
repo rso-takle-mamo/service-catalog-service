@@ -331,20 +331,6 @@ Authorization: Bearer <token>
 **Description:** Deletes a category (only if it belongs to the provider's tenant)
 **Response:** `204 No Content`
 
-## Role-Based Access Control
-
-### Customers:
-- ✅ Read services from all tenants
-- ✅ Use Address/BusinessName filtering
-- ✅ Use all service filters
-- ❌ Cannot create/update/delete services or categories
-
-### Providers:
-- ✅ Access only own tenant data
-- ✅ Create/update/delete services and categories
-- ✅ Use service filters (except tenant-based ones)
-- ❌ Cannot use Address/BusinessName filters
-- ❌ Cannot access other tenants' data
 
 ## Environment Variables
 
@@ -353,9 +339,56 @@ Authorization: Bearer <token>
 | `DATABASE_CONNECTION_STRING` | Yes | PostgreSQL connection string |
 | `JWT_SECRET_KEY` | Yes | JWT signing key (minimum 128 bits) |
 | `ASPNETCORE_ENVIRONMENT` | No | Environment (Development/Production) |
+| `KAFKA__BOOTSTRAPSERVERS` | Yes | Kafka bootstrap servers |
+| `KAFKA__CLIENTID` | Yes | Kafka client ID (producer) |
+| `KAFKA__TENANTEVENTSTOPIC` | Yes | Tenant events topic (consumer) |
+| `KAFKA__SERVICECATALOGEVENTSTOPIC` | Yes | Service catalog events topic (producer) |
+| `KAFKA__CONSUMERGROUPID` | Yes | Kafka consumer group ID |
+| `KAFKA__ENABLEAUTOCOMMIT` | Yes | Kafka auto-commit setting |
+| `KAFKA__AUTOOFFSETRESET` | Yes | Kafka auto offset reset |
+| `KAFKA__ACKS` | Yes | Kafka producer acks setting |
+| `KAFKA__ENABLEIDEMPOTENCE` | Yes | Kafka producer idempotence |
+| `KAFKA__MESSAGETIMEOUTMS` | Yes | Kafka message timeout |
+| `KAFKA__REQUESTTIMEOUTMS` | Yes | Kafka request timeout |
 
 ## Health Checks
 
 - `GET /health` - Complete health check including database
 - `GET /health/live` - Basic service liveness check
 - `GET /health/ready` - Readiness check for dependencies
+
+## Kafka Events
+
+The Service Catalog Service acts as both a **Kafka Producer** (for service catalog events) and **Kafka Consumer** (for tenant events).
+
+### Published Events
+
+| Event Type | Topic | Trigger | Description |
+|------------|-------|---------|-------------|
+| `ServiceCreatedEvent` | `service-catalog-events` | Service creation | Contains full service details |
+| `ServiceEditedEvent` | `service-catalog-events` | Service update | Contains updated service details |
+| `ServiceDeletedEvent` | `service-catalog-events` | Service deletion | Contains ServiceId and TenantId only |
+| `CategoryCreatedEvent` | `service-catalog-events` | Category creation | Contains full category details |
+| `CategoryEditedEvent` | `service-catalog-events` | Category update | Contains updated category details |
+| `CategoryDeletedEvent` | `service-catalog-events` | Category deletion | Contains CategoryId and TenantId only |
+
+### Consumed Events
+
+| Event Type | Topic | Handler | Description |
+|------------|-------|---------|-------------|
+| `TenantCreatedEvent` | `tenant-events` | `TenantEventService` | Creates tenant in local database |
+| `TenantUpdatedEvent` | `tenant-events` | `TenantEventService` | Updates tenant in local database |
+
+### Producer Configuration
+
+- **Acks**: `all` (strongest durability guarantee)
+- **Idempotence**: `enabled` (prevents duplicate messages)
+- **Message Timeout**: 5000ms
+- **Request Timeout**: 3000ms
+- **Serialization**: JSON with camelCase property naming
+
+### Consumer Configuration
+
+- **Auto Commit**: `false` (manual offset management)
+- **Offset Reset**: `earliest` (read from beginning)
+- **Consumer Group**: `service-catalog-service-tenant-events`

@@ -3,6 +3,7 @@ using ServiceCatalogService.Api.Responses;
 using ServiceCatalogService.Api.Extensions;
 using ServiceCatalogService.Api.Exceptions;
 using ServiceCatalogService.Api.Services.Interfaces;
+using ServiceCatalogService.Api.Events.Service;
 using ServiceCatalogService.Database.Models;
 using ServiceCatalogService.Database.Enums;
 using ServiceCatalogService.Database.Repositories.Interfaces;
@@ -10,7 +11,7 @@ using ServiceCatalogService.Database.UpdateModels;
 
 namespace ServiceCatalogService.Api.Services;
 
-public class ServiceService(IServiceRepository serviceRepository) : IServiceService
+public class ServiceService(IServiceRepository serviceRepository, IKafkaProducerService kafkaProducerService) : IServiceService
 {
     public async Task<(IEnumerable<ServiceResponse> Services, int TotalCount)> GetServicesAsync(
         ServiceFilterRequest request,
@@ -104,6 +105,20 @@ public class ServiceService(IServiceRepository serviceRepository) : IServiceServ
 
         await serviceRepository.CreateServiceAsync(service);
 
+        // Publish ServiceCreated event
+        var serviceCreatedEvent = new ServiceCreatedEvent
+        {
+            ServiceId = service.Id,
+            TenantId = service.TenantId,
+            Name = service.Name,
+            Description = service.Description,
+            Price = service.Price,
+            DurationMinutes = service.DurationMinutes,
+            CategoryId = service.CategoryId,
+            IsActive = service.IsActive
+        };
+        await kafkaProducerService.PublishServiceCatalogEventAsync(serviceCreatedEvent);
+
         return service.ToServiceResponse();
     }
 
@@ -139,7 +154,22 @@ public class ServiceService(IServiceRepository serviceRepository) : IServiceServ
         }
 
         var updatedService = await serviceRepository.GetServiceByIdAsync(id);
-        return updatedService!.ToServiceResponse();
+
+        // Publish ServiceEdited event
+        var serviceEditedEvent = new ServiceEditedEvent
+        {
+            ServiceId = updatedService!.Id,
+            TenantId = updatedService.TenantId,
+            Name = updatedService.Name,
+            Description = updatedService.Description,
+            Price = updatedService.Price,
+            DurationMinutes = updatedService.DurationMinutes,
+            CategoryId = updatedService.CategoryId,
+            IsActive = updatedService.IsActive
+        };
+        await kafkaProducerService.PublishServiceCatalogEventAsync(serviceEditedEvent);
+
+        return updatedService.ToServiceResponse();
     }
 
     public async Task<bool> DeleteServiceAsync(Guid id, Guid userTenantId)
@@ -155,6 +185,14 @@ public class ServiceService(IServiceRepository serviceRepository) : IServiceServ
         {
             throw new AuthorizationException("Service", "delete", "Access denied. Cannot delete service from different tenant.");
         }
+
+        // Publish ServiceDeleted event before deletion
+        var serviceDeletedEvent = new ServiceDeletedEvent
+        {
+            ServiceId = existingService.Id,
+            TenantId = existingService.TenantId
+        };
+        await kafkaProducerService.PublishServiceCatalogEventAsync(serviceDeletedEvent);
 
         var success = await serviceRepository.DeleteServiceAsync(id);
 

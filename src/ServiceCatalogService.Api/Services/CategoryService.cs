@@ -4,12 +4,13 @@ using ServiceCatalogService.Api.Extensions;
 using ServiceCatalogService.Api.Exceptions;
 using ServiceCatalogService.Api.Models;
 using ServiceCatalogService.Api.Services.Interfaces;
+using ServiceCatalogService.Api.Events.Category;
 using ServiceCatalogService.Database.Repositories.Interfaces;
 using ServiceCatalogService.Database.UpdateModels;
 
 namespace ServiceCatalogService.Api.Services;
 
-public class CategoryService(ICategoryRepository categoryRepository) : ICategoryService
+public class CategoryService(ICategoryRepository categoryRepository, IKafkaProducerService kafkaProducerService) : ICategoryService
 {
     public async Task<CategoryResponse?> GetServiceCategoryAsync(Guid serviceId, bool isCustomer, Guid? userTenantId)
     {
@@ -111,6 +112,17 @@ public class CategoryService(ICategoryRepository categoryRepository) : ICategory
         }
 
         await categoryRepository.CreateCategoryAsync(category);
+
+        // Publish CategoryCreated event
+        var categoryCreatedEvent = new CategoryCreatedEvent
+        {
+            CategoryId = category.Id,
+            TenantId = category.TenantId,
+            Name = category.Name,
+            Description = category.Description
+        };
+        await kafkaProducerService.PublishServiceCatalogEventAsync(categoryCreatedEvent);
+
         return category.ToCategoryResponse();
     }
 
@@ -152,7 +164,18 @@ public class CategoryService(ICategoryRepository categoryRepository) : ICategory
         }
 
         var updatedCategory = await categoryRepository.GetCategoryByIdAsync(categoryId);
-        return updatedCategory!.ToCategoryResponse();
+
+        // Publish CategoryEdited event
+        var categoryEditedEvent = new CategoryEditedEvent
+        {
+            CategoryId = updatedCategory!.Id,
+            TenantId = updatedCategory.TenantId,
+            Name = updatedCategory.Name,
+            Description = updatedCategory.Description
+        };
+        await kafkaProducerService.PublishServiceCatalogEventAsync(categoryEditedEvent);
+
+        return updatedCategory.ToCategoryResponse();
     }
 
     public async Task<bool> DeleteCategoryAsync(Guid categoryId, Guid userTenantId)
@@ -169,6 +192,14 @@ public class CategoryService(ICategoryRepository categoryRepository) : ICategory
         {
             throw new AuthorizationException("Category", "delete", "Access denied. Cannot delete category from different tenant.");
         }
+
+        // Publish CategoryDeleted event before deletion
+        var categoryDeletedEvent = new CategoryDeletedEvent
+        {
+            CategoryId = existingCategory.Id,
+            TenantId = existingCategory.TenantId
+        };
+        await kafkaProducerService.PublishServiceCatalogEventAsync(categoryDeletedEvent);
 
         var success = await categoryRepository.DeleteCategoryAsync(categoryId);
 
